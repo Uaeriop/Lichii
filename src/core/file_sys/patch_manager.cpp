@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 
@@ -63,6 +64,8 @@ struct BuiltinPatch {
     size_t state_size = 0;
     // Another built-in this one contains; it is skipped once this one is applied.
     std::string_view replaces{};
+    /// When set, the patch applies only while this environment variable is 1 (opt-in).
+    const char* enable_env = nullptr;
 };
 
 constexpr std::array<u8, 4> MAX_RESOLUTION_ORIGINAL{0xE8, 0x41, 0x00, 0x36};
@@ -104,6 +107,28 @@ constexpr std::array FPS_UNLOCK_RECORDS{
     BuiltinPatchRecord{0x3C46200, FPS_UNLOCK_ROUTINE, {}, true},
 };
 
+// Occlusion Off (cLohan's community patch, from zortos293/Lichii#641, ported from Fritchii): the
+// game creates no z-prepass occlusion queries and no samples-passed queries (ldrb w8, [x0] ->
+// mov w8, wzr), so it issues no occlusion reports and no conditional renders.
+constexpr std::array<u8, 4> MOV_W8_WZR{0xE8, 0x03, 0x1F, 0x2A};
+constexpr std::array<u8, 4> LDRB_W8_X0{0x08, 0x00, 0x40, 0x39};
+constexpr std::array OCCLUSION_OFF_RECORDS{
+    BuiltinPatchRecord{0x11ACE68, MOV_W8_WZR, LDRB_W8_X0},
+    BuiltinPatchRecord{0x11B828C, MOV_W8_WZR, LDRB_W8_X0},
+    BuiltinPatchRecord{0x11B82A4, MOV_W8_WZR, LDRB_W8_X0},
+    BuiltinPatchRecord{0x11ACEC8, MOV_W8_WZR, LDRB_W8_X0},
+    BuiltinPatchRecord{0x11B82DC, MOV_W8_WZR, LDRB_W8_X0},
+    BuiltinPatchRecord{0x11B82F4, MOV_W8_WZR, LDRB_W8_X0},
+};
+
+bool BuiltinEnvEnabled(const char* env) {
+    if (env == nullptr) {
+        return true;
+    }
+    const char* const value = std::getenv(env);
+    return value != nullptr && std::string_view{value} == "1";
+}
+
 constexpr std::array BUILTIN_PATCHES{
     // Ocarina of Time takes its "dynamic resolution disabled" path, so the 3D renders at full scale
     // instead of following the GPU-time controller down to its 480p floor.
@@ -134,6 +159,14 @@ constexpr std::array BUILTIN_PATCHES{
         .records = DYNAMIC_FPS_RECORDS,
         .state_offset = 0x4E9FE00,
         .state_size = 16,
+    },
+    BuiltinPatch{
+        .name = "Occlusion Off (built-in, EDEN_NX2_OCCLUSION_OFF=1)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = OCCLUSION_OFF_RECORDS,
+        .enable_env = "EDEN_NX2_OCCLUSION_OFF",
     },
 };
 
@@ -558,7 +591,8 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
     const auto disabled = GetDisabledAddons();
     std::vector<std::string_view> replaced;
     for (const auto& patch : BUILTIN_PATCHES) {
-        if (patch.title_id != title_id || patch.module != name) {
+        if (patch.title_id != title_id || patch.module != name ||
+            !BuiltinEnvEnabled(patch.enable_env)) {
             continue;
         }
         if (std::find(disabled.cbegin(), disabled.cend(), patch.name) != disabled.cend()) {
@@ -1213,7 +1247,7 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
     }
 
     for (const auto& patch : BUILTIN_PATCHES) {
-        if (patch.title_id != title_id) {
+        if (patch.title_id != title_id || !BuiltinEnvEnabled(patch.enable_env)) {
             continue;
         }
         const auto is_disabled = [&](std::string_view name) {
