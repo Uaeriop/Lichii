@@ -8,7 +8,6 @@
 #include <thread>
 
 #include "common/logging.h"
-#include "common/nx2_timeline.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/frontend/emu_window.h"
@@ -417,7 +416,6 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
                       : nullptr);
     if (const u64 want = pacer.Outstanding(); pacer.Pacing() && want != 0) {
         // The next target counts from the refresh the previous frame was shown at.
-        Common::Nx2Timeline::Span span{"present: wait until shown"};
         // At most a refresh and a half: a driver whose present wait never signals would hold
         // every frame for the whole wait (the pacer turns itself off after a few of these).
         const auto limit = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -439,7 +437,6 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
     if (frame->render_tick != 0) {
         // Hold from when the frame is rendered: a frame the GPU finishes late is presented at
         // once rather than counted against the lead.
-        Common::Nx2Timeline::Span span{"present: wait for frame render"};
         scheduler.GetMasterSemaphore().Wait(frame->render_tick);
     }
     const auto start = Clock::now();
@@ -457,7 +454,6 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
         if (target <= start || target - start >= pacer.RefreshPeriod()) {
             return false;
         }
-        Common::Nx2Timeline::Span span{"present: host pacing hold"};
         for (auto now = start; now < target && !token.stop_requested(); now = Clock::now()) {
             const auto left = target - now;
             if (left > std::chrono::microseconds{1500}) {
@@ -474,7 +470,6 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
     if (target <= start) {
         return false;
     }
-    Common::Nx2Timeline::Span span{"present: host pacing hold"};
     for (auto now = start; now < target && !token.stop_requested(); now = Clock::now()) {
         const auto left = target - now;
         if (left > std::chrono::microseconds{1500}) {
