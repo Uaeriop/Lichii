@@ -22,6 +22,7 @@
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
 #include "video_core/gpu.h"
+#include "video_core/hdr_output.h"
 #include "video_core/present.h"
 #include "video_core/render_trace.h"
 #include "video_core/renderer_vulkan/present/util.h"
@@ -35,6 +36,7 @@
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/textures/decoders.h"
+#include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/vulkan_common/vulkan_debug_callback.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_instance.h"
@@ -232,8 +234,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(),
-                               present_manager.SwapchainImageCount(),
-                               swapchain.GetImageViewFormat());
+                               present_manager.SwapchainImageCount(), FrameViewFormat(framebuffers));
 
 #ifdef HAS_LSFG
     void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
@@ -288,6 +289,41 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         }
         trace_last_frame = entered;
     }
+}
+
+VkFormat RendererVulkan::FrameViewFormat(std::span<const Tegra::FramebufferConfig> framebuffers) {
+    namespace Hdr = VideoCore::HdrOutput;
+    const auto hdr10_format =
+        static_cast<VkFormat>(Hdr::g_host_hdr10_format.load(std::memory_order_relaxed));
+    const bool any_hdr_layer =
+        std::ranges::any_of(framebuffers, [](const auto& layer) { return layer.hdr_pq; });
+    const auto mode = Settings::values.hdr_output.GetValue();
+    const bool hdr =
+        Hdr::WantsHdrTarget(mode, hdr10_format != VK_FORMAT_UNDEFINED, any_hdr_layer);
+    // 0: SDR frames of SDR layers, 1: SDR frames of an HDR layer (tonemapped), 2: HDR10 frames.
+    const u32 state = hdr ? 2U : (any_hdr_layer ? 1U : 0U);
+    if (state != std::exchange(hdr_frame_state, state)) {
+        if (hdr) {
+            LOG_INFO(Render_Vulkan,
+                     "HDR output: frames are rendered as HDR10 ({}); the game's image is {}; "
+                     "setting {}, peak {} nits, paper white {} nits",
+                     string_VkFormat(hdr10_format),
+                     any_hdr_layer ? "HDR10 and shown as it is"
+                                   : "SDR and converted at paper white",
+                     Settings::CanonicalizeEnum(mode), Settings::values.hdr_peak_nits.GetValue(),
+                     Settings::values.hdr_paper_white_nits.GetValue());
+        } else if (any_hdr_layer) {
+            LOG_INFO(Render_Vulkan,
+                     "HDR output: the game's image is HDR10 but the output is SDR ({}); it is "
+                     "tonemapped",
+                     hdr10_format == VK_FORMAT_UNDEFINED ? "the display offers no HDR10: is HDR on "
+                                                           "in the system's display settings?"
+                                                         : "HDR output is off");
+        } else {
+            LOG_INFO(Render_Vulkan, "HDR output: frames are rendered as SDR");
+        }
+    }
+    return hdr ? hdr10_format : swapchain.GetSdrImageViewFormat();
 }
 
 void RendererVulkan::Report() const {

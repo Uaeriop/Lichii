@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/present/lsfg_common.h"
 #endif
 #include "video_core/nx2_perf.h"
+#include "video_core/renderer_vulkan/present/hdr_convert.h"
 #include "video_core/renderer_vulkan/vk_present_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
@@ -244,6 +245,11 @@ void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat
 
     frame->width = width;
     frame->height = height;
+    frame->view_format = image_view_format;
+    // An HDR10 frame is its own format; an SDR frame is the SDR surface format, also while the
+    // swapchain still shows HDR10 (or the other way around) for the frames in flight.
+    const VkFormat image_format =
+        IsHdr10Format(image_view_format) ? image_view_format : swapchain.GetSdrImageFormat();
 
     const bool with_storage = storage && frame->storage_capable;
     VkImageUsageFlags storage_usage = 0;
@@ -256,7 +262,7 @@ void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat
         .pNext = nullptr,
         .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = swapchain.GetImageFormat(),
+        .format = image_format,
         .extent =
             {
                 .width = width,
@@ -307,7 +313,7 @@ void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat
             .flags = 0,
             .image = *frame->image,
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = swapchain.GetImageFormat(),
+            .format = image_format,
             .components =
                 {
                     .r = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -658,6 +664,15 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
 
     // If the size of the incoming frames has changed, recreate the swapchain
     // to account for that.
+    // The swapchain follows the frames: HDR10 for frames rendered as HDR10, SDR for the others.
+    swapchain.RequestHdr(IsHdr10Format(frame->view_format));
+    if ((++hdr_refresh_counter % 60) == 0) {
+        try {
+            swapchain.RefreshHdrAvailability();
+        } catch (const vk::Exception&) {
+            // A lost surface is handled by the present below.
+        }
+    }
     const bool is_suboptimal = swapchain.NeedsRecreation() || swapchain.IsOutDated();
     const bool size_changed =
         swapchain.GetWidth() != frame->width || swapchain.GetHeight() != frame->height;

@@ -97,6 +97,7 @@ VK_DEFINE_HANDLE(VmaPool)
     EXTENSION(EXT, CONDITIONAL_RENDERING, conditional_rendering)                                   \
     EXTENSION(EXT, CONSERVATIVE_RASTERIZATION, conservative_rasterization)                         \
     EXTENSION(EXT, DEPTH_RANGE_UNRESTRICTED, depth_range_unrestricted)                             \
+    EXTENSION(EXT, HDR_METADATA, hdr_metadata)                                                     \
     EXTENSION(EXT, MEMORY_BUDGET, memory_budget)                                                   \
     EXTENSION(EXT, ROBUSTNESS_2, robustness_2)                                                     \
     EXTENSION(EXT, SAMPLER_FILTER_MINMAX, sampler_filter_minmax)                                   \
@@ -725,6 +726,11 @@ FN_MAX_LIMIT_LIST
     /// Returns true if the device supports task and mesh shaders (VK_EXT_mesh_shader).
     bool IsPipelineStatisticsQuerySupported() const {
         return features.features.pipelineStatisticsQuery;
+    }
+
+    /// Whether an HDR10 swapchain can be given its mastering metadata (vkSetHdrMetadataEXT).
+    bool IsExtHdrMetadataSupported() const {
+        return extensions.hdr_metadata;
     }
 
     /// Whether presents can carry ids and be waited on until shown (the host frame pacer).

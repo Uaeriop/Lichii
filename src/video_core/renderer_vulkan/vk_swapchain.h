@@ -55,8 +55,24 @@ public:
 
     /// Returns true when the swapchain needs to be recreated.
     bool NeedsRecreation() const {
-        return !swapchain || IsSubOptimal() || NeedsPresentModeUpdate();
+        return !swapchain || IsSubOptimal() || NeedsPresentModeUpdate() || NeedsHdrUpdate();
     }
+
+    /// Asks for an HDR10 swapchain (or an SDR one again) from the next creation on; the frames to
+    /// present are rendered for one or the other (video_core/hdr_output.h). Without an HDR10
+    /// surface format the swapchain stays SDR.
+    void RequestHdr(bool hdr) {
+        want_hdr = hdr;
+    }
+
+    /// Whether the swapchain shows HDR10 (10-bit, BT.2020, ST 2084).
+    bool IsHdr() const {
+        return is_hdr;
+    }
+
+    /// Reads again whether the surface offers HDR10: it changes when HDR is turned on or off in
+    /// the system. Cheap enough for about once a second.
+    void RefreshHdrAvailability();
 
     bool IsCreated() const {
         return static_cast<bool>(swapchain);
@@ -104,6 +120,15 @@ public:
         return surface_format.format;
     }
 
+    /// The formats SDR frames are rendered in, whatever the swapchain shows now.
+    VkFormat GetSdrImageFormat() const {
+        return sdr_surface_format.format;
+    }
+
+    VkFormat GetSdrImageViewFormat() const {
+        return sdr_image_view_format;
+    }
+
     VkSemaphore CurrentPresentSemaphore() const {
         return *present_semaphores[frame_index];
     }
@@ -132,6 +157,8 @@ private:
     void Destroy();
 
     bool NeedsPresentModeUpdate() const;
+    bool NeedsHdrUpdate() const;
+    void SetHdrMetadata();
 
     VkSurfaceKHR_T* surface;
 
@@ -157,6 +184,11 @@ private:
     VkExtent2D extent{};
     VkPresentModeKHR present_mode{};
     VkSurfaceFormatKHR surface_format{};
+    VkSurfaceFormatKHR sdr_surface_format{};
+    VkFormat sdr_image_view_format{};
+    VkFormat hdr10_format{}; ///< the surface's HDR10 format, VK_FORMAT_UNDEFINED without one
+    bool want_hdr{};
+    bool is_hdr{};
     bool has_imm{false};
     bool has_mailbox{false};
     bool has_fifo_relaxed{false};

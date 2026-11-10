@@ -33,6 +33,9 @@ class Swapchain;
 struct Frame {
     u32 width;
     u32 height;
+    /// The format RecreateFrame made the frame's view in; an HDR10 format for a frame that holds
+    /// an HDR10 signal (present/hdr_convert.h). VK_FORMAT_UNDEFINED for capture frames.
+    VkFormat view_format{};
     u32 index;
     vk::Image image;
     vk::ImageView image_view;
@@ -126,6 +129,7 @@ private:
     std::atomic<std::size_t> image_count{};
     std::atomic<std::size_t> swapchain_image_count{};
     std::atomic<VkFormat> swapchain_image_format{};
+    u32 hdr_refresh_counter{}; ///< presents since the surface's HDR formats were read
 
     // Host frame pacer, used when the device supports VK_KHR_present_wait (present thread only).
     struct PendingWait {

@@ -12,6 +12,7 @@
 #include "video_core/framebuffer_config.h"
 #include "video_core/present.h"
 #include "video_core/renderer_vulkan/present/filters.h"
+#include "video_core/renderer_vulkan/present/hdr_convert.h"
 #include "video_core/renderer_vulkan/present/layer.h"
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_present_manager.h"
@@ -126,6 +127,10 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
         presentation_recreate_required = true;
         swapchain_view_format = current_swapchain_view_format;
     }
+    // The other frames of the present queue were made for the format before a switch between
+    // SDR and HDR10 output: each is made again when it is next drawn to.
+    const bool frame_format_outdated = frame->view_format != VK_FORMAT_UNDEFINED &&
+                                       frame->view_format != current_swapchain_view_format;
 
     const bool storage_required = Settings::FrameGenActive();
     if (resource_update_required) {
@@ -138,6 +143,10 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
         }
 
         image_index = 0;
+    } else if (frame_format_outdated) {
+        WaitIdle(device);
+        present_manager.RecreateFrame(frame, layout.width, layout.height, swapchain_view_format,
+                                      window_adapt->GetRenderPass(), storage_required);
     } else if (present_manager.NeedsStorage(frame, storage_required)) {
         present_manager.RecreateFrame(frame, layout.width, layout.height, swapchain_view_format,
                                       window_adapt->GetRenderPass(), true);
@@ -156,7 +165,8 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
         }
     }
 
-    window_adapt->Draw(device, rasterizer, scheduler, image_index, layers, framebuffers, layout, frame);
+    window_adapt->Draw(device, rasterizer, scheduler, image_index, layers, framebuffers, layout,
+                       frame, IsHdr10Format(current_swapchain_view_format));
 
     if (++image_index >= image_count) {
         image_index = 0;

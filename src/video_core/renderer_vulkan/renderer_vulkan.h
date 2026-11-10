@@ -66,12 +66,18 @@ private:
     Common::DkbFrameTrace::RateLimit trace_cpu_rate;
     std::chrono::steady_clock::time_point trace_last_frame{};
     u64 trace_frame{};
+    u32 hdr_frame_state{~0U}; ///< what FrameViewFormat last logged
 
     void InterpolateFrames(Frame* prev_frame, Frame* curr_frame);
     Frame* previous_frame = nullptr;  // Store the previous frame for interpolation
     VkCommandBuffer BeginSingleTimeCommands();
     void EndSingleTimeCommands(VkCommandBuffer command_buffer);
     void Report() const;
+
+    /// The view format of the frame the layers are drawn to: the surface's HDR10 format when the
+    /// HDR output setting asks for HDR10 frames (video_core/hdr_output.h), else the SDR format.
+    /// Logs each change.
+    VkFormat FrameViewFormat(std::span<const Tegra::FramebufferConfig> framebuffers);
 
     vk::Buffer RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
                               const Layout::FramebufferLayout& layout, VkFormat format,

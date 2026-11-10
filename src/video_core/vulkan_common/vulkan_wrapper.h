@@ -347,6 +347,7 @@ struct DeviceDispatch : InstanceDispatch {
 #endif
     PFN_vkGetPipelineExecutablePropertiesKHR vkGetPipelineExecutablePropertiesKHR{};
     PFN_vkWaitForPresentKHR vkWaitForPresentKHR{};
+    PFN_vkSetHdrMetadataEXT vkSetHdrMetadataEXT{};
     PFN_vkGetPipelineExecutableStatisticsKHR vkGetPipelineExecutableStatisticsKHR{};
     PFN_vkGetQueryPoolResults vkGetQueryPoolResults{};
     PFN_vkGetSemaphoreCounterValue vkGetSemaphoreCounterValue{};
@@ -1134,6 +1135,15 @@ public:
 
     std::vector<VkPipelineExecutablePropertiesKHR> GetPipelineExecutablePropertiesKHR(
         VkPipeline pipeline) const;
+
+    /// vkSetHdrMetadataEXT; false when the function was not loaded (no VK_EXT_hdr_metadata).
+    bool SetHdrMetadataEXT(VkSwapchainKHR swapchain, const VkHdrMetadataEXT& metadata) const noexcept {
+        if (!dld->vkSetHdrMetadataEXT) {
+            return false;
+        }
+        dld->vkSetHdrMetadataEXT(handle, 1, &swapchain, &metadata);
+        return true;
+    }
 
     /// vkWaitForPresentKHR; VK_ERROR_FEATURE_NOT_PRESENT when the function was not loaded.
     VkResult WaitForPresentKHR(VkSwapchainKHR swapchain, u64 present_id,

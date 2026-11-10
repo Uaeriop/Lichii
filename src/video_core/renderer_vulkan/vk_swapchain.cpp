@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <limits>
+#include <optional>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -17,6 +18,8 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
+#include "video_core/hdr_output.h"
+#include "video_core/renderer_vulkan/present/hdr_convert.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
@@ -42,19 +45,23 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats)
     return found != formats.end() ? *found : formats[0];
 }
 
-/// Logs the swapchain's format and whether the surface offers HDR10 (it only does with
-/// VK_EXT_swapchain_colorspace enabled and HDR turned on in the system), once per change.
+/// The surface's HDR10 format: 10 bits a channel with the ST 2084 (PQ) color space. Surfaces list
+/// it only with VK_EXT_swapchain_colorspace enabled and HDR turned on in the system.
+std::optional<VkSurfaceFormatKHR> FindHdr10SurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats) {
+    const auto found = std::find_if(formats.begin(), formats.end(), [](const auto& format) {
+        return format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT && IsHdr10Format(format.format);
+    });
+    return found != formats.end() ? std::optional{*found} : std::nullopt;
+}
+
+/// Logs the swapchain's format and what the surface offers, once per change.
 void LogSurfaceFormats(vk::Span<VkSurfaceFormatKHR> formats, VkSurfaceFormatKHR chosen) {
     const auto offers = [&formats](VkColorSpaceKHR color_space) {
         return std::count_if(formats.begin(), formats.end(), [color_space](const auto& format) {
             return format.colorSpace == color_space;
         });
     };
-    const bool hdr10 = std::any_of(formats.begin(), formats.end(), [](const auto& format) {
-        return format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
-               (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-                format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-    });
+    const bool hdr10 = FindHdr10SurfaceFormat(formats).has_value();
     const u64 summary = (u64{formats.size()} << 48) | (u64{hdr10} << 47) |
                         ((static_cast<u64>(chosen.format) << 16) ^ static_cast<u64>(chosen.colorSpace));
     static std::atomic<u64> logged{~u64{0}};
@@ -320,7 +327,14 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
                                  VK_PRESENT_MODE_FIFO_RELAXED_KHR) != present_modes.end();
 
     const VkCompositeAlphaFlagBitsKHR alpha_flags{ChooseAlphaFlags(capabilities)};
-    surface_format = ChooseSwapSurfaceFormat(formats);
+    sdr_surface_format = ChooseSwapSurfaceFormat(formats);
+    const auto hdr10_surface_format = FindHdr10SurfaceFormat(formats);
+    hdr10_format = hdr10_surface_format ? hdr10_surface_format->format : VK_FORMAT_UNDEFINED;
+    is_hdr = want_hdr && hdr10_surface_format.has_value();
+    surface_format = is_hdr ? *hdr10_surface_format : sdr_surface_format;
+    VideoCore::HdrOutput::g_host_hdr10_format.store(static_cast<u32>(hdr10_format),
+                                                    std::memory_order_relaxed);
+    VideoCore::HdrOutput::g_host_hdr10_active.store(is_hdr, std::memory_order_relaxed);
     LogSurfaceFormats(formats, surface_format);
     present_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
 
@@ -386,7 +400,8 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
         .viewFormatCount = static_cast<u32>(view_formats.size()),
         .pViewFormats = view_formats.data(),
     };
-    if (device.IsKhrSwapchainMutableFormatEnabled()) {
+    // An HDR10 swapchain is only viewed in its own format.
+    if (device.IsKhrSwapchainMutableFormatEnabled() && !is_hdr) {
         format_list.pNext = std::exchange(swapchain_ci.pNext, &format_list);
         swapchain_ci.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
     }
@@ -402,10 +417,60 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     image_count = static_cast<u32>(images.size());
 #ifdef __ANDROID__
     // Android is already ordered the same as Switch.
-    image_view_format = VK_FORMAT_R8G8B8A8_UNORM;
+    sdr_image_view_format = VK_FORMAT_R8G8B8A8_UNORM;
 #else
-    image_view_format = VK_FORMAT_B8G8R8A8_UNORM;
+    sdr_image_view_format = VK_FORMAT_B8G8R8A8_UNORM;
 #endif
+    image_view_format = is_hdr ? surface_format.format : sdr_image_view_format;
+    if (is_hdr) {
+        SetHdrMetadata();
+    }
+}
+
+void Swapchain::SetHdrMetadata() {
+    // BT.2020 primaries and a D65 white point, as HDR10 signals have; the luminances are what
+    // games are told about the display (vi2 104).
+    const f32 peak = static_cast<f32>(Settings::values.hdr_peak_nits.GetValue());
+    const f32 paper_white = static_cast<f32>(Settings::values.hdr_paper_white_nits.GetValue());
+    const VkHdrMetadataEXT metadata{
+        .sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+        .pNext = nullptr,
+        .displayPrimaryRed = {0.708f, 0.292f},
+        .displayPrimaryGreen = {0.170f, 0.797f},
+        .displayPrimaryBlue = {0.131f, 0.046f},
+        .whitePoint = {0.3127f, 0.3290f},
+        .maxLuminance = peak,
+        .minLuminance = 0.0f,
+        .maxContentLightLevel = peak,
+        .maxFrameAverageLightLevel = paper_white,
+    };
+    const bool set = device.IsExtHdrMetadataSupported() &&
+                     device.GetLogical().SetHdrMetadataEXT(*swapchain, metadata);
+    LOG_INFO(Render_Vulkan,
+             "HDR10 swapchain: {} {}, metadata {} (BT.2020, D65, peak {} nits, MaxCLL {} nits, "
+             "MaxFALL {} nits)",
+             string_VkFormat(surface_format.format),
+             string_VkColorSpaceKHR(surface_format.colorSpace),
+             set ? "set" : "not set: no VK_EXT_hdr_metadata", peak, peak, paper_white);
+}
+
+void Swapchain::RefreshHdrAvailability() {
+    const auto formats{device.GetPhysical().GetSurfaceFormatsKHR(VkSurfaceKHR(surface))};
+    const auto hdr10_surface_format = FindHdr10SurfaceFormat(formats);
+    const VkFormat format =
+        hdr10_surface_format ? hdr10_surface_format->format : VK_FORMAT_UNDEFINED;
+    if (format == hdr10_format) {
+        return;
+    }
+    hdr10_format = format;
+    VideoCore::HdrOutput::g_host_hdr10_format.store(static_cast<u32>(format),
+                                                    std::memory_order_relaxed);
+    LOG_INFO(Render_Vulkan, "The display {} HDR10 output",
+             format != VK_FORMAT_UNDEFINED ? "now offers" : "no longer offers");
+}
+
+bool Swapchain::NeedsHdrUpdate() const {
+    return (want_hdr && hdr10_format != VK_FORMAT_UNDEFINED) != is_hdr;
 }
 
 void Swapchain::CreateSemaphores() {

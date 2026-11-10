@@ -88,16 +88,13 @@ namespace {
 #endif
     if (enable_validation && AreExtensionsSupported(dld, properties, std::array{VK_EXT_DEBUG_UTILS_EXTENSION_NAME}))
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    // EXPERIMENT (EDEN_NX2_REPORT_HDR): with VK_EXT_swapchain_colorspace the surface lists its HDR
-    // formats too, so the swapchain can log whether the display offers HDR10. The swapchain still
-    // takes its SDR format.
-    if (const char* const report_hdr = std::getenv("EDEN_NX2_REPORT_HDR");
-        report_hdr != nullptr && report_hdr[0] != '0' &&
-        window_type != Core::Frontend::WindowSystemType::Headless &&
+    // With VK_EXT_swapchain_colorspace the surface lists its HDR formats too (HDR output,
+    // video_core/hdr_output.h). The swapchain keeps its SDR format unless that setting asks for
+    // HDR10.
+    if (window_type != Core::Frontend::WindowSystemType::Headless &&
         AreExtensionsSupported(dld, properties,
                                std::array{VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME})) {
         extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
-        LOG_INFO(Render_Vulkan, "HDR experiment: VK_EXT_swapchain_colorspace enabled");
     }
 #ifdef EGLANTINE_STREAMLINE
     // What NVIDIA's DLSS asks for through Streamline, where available. Static: the returned
