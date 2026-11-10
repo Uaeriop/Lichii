@@ -42,6 +42,7 @@
 #include "core/frontend/framebuffer_layout.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
+#include "video_core/hdr_output.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/framebuffer_config.h"
@@ -2408,6 +2409,9 @@ private:
                      image_id, layout.width, layout.height, shown_size, crop_width, crop_height,
                      Settings::IsDockedMode());
         }
+        // A game that was told the display is HDR presents RGB10A2 images that hold an HDR10
+        // signal (BT.2020, PQ); told SDR, its images are sRGB whatever their format.
+        const bool told_hdr = m_told_hdr_status && m_told_hdr_status->IsHdr();
         // The image's format decides whether the game sends an HDR signal: log each change with
         // the whole preference, whose other words may say more (transfer function, color space).
         if (image_format != m_shown_format) {
@@ -2417,8 +2421,9 @@ private:
                      "preference {:#x}",
                      image_id, image_format,
                      image_format == 4 ? "RGB10A2" : image_format == 1 ? "RGBA8" : "shown as RGBA8",
-                     ReportedHdrStatus().IsHdr(), fmt::join(image_preference, " "));
+                     told_hdr, fmt::join(image_preference, " "));
         }
+        NotifyHdrChanges();
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
             .offset = 0,
@@ -2432,6 +2437,7 @@ private:
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
+            .hdr_pq = image_format == 4 && told_hdr,
         }};
         std::vector<Nvidia::NvFence> fences;
         if (fence_id < 192) {
@@ -2540,9 +2546,11 @@ private:
 
     // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 paper white in nits. The empty reply
     // left it to the message buffer's leftovers; answer the BT.2408 reference white.
-    // EDEN_NX2_HDR_PAPER_WHITE=<nits> answers another one (HDR output experiment).
+    // With HDR reported it is the HDR paper white setting; EDEN_NX2_HDR_PAPER_WHITE=<nits>
+    // overrides it.
     void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
-        static const u32 paper_white = Nx2HdrPaperWhiteFor(EnvU32("EDEN_NX2_HDR_PAPER_WHITE"));
+        const u32 paper_white = ReportedPaperWhite();
+        m_told_paper_white = paper_white;
         if (Nx2LogsQuery(++m_hdr_paper_white_queries)) {
             LOG_INFO(Service, "nx2:vi2 105 HDR paper white query #{} -> {} nits",
                      m_hdr_paper_white_queries, paper_white);
@@ -2557,11 +2565,14 @@ private:
     // window images every few frames, which showed black. Report SDR output.
     // nn::vi2::QueryDisplayHdrStatus(display name): u64 output format, u16 peak luminance in
     // nits. The sdk takes format 1 as SDR and 2 as HDR and fails the query on any other value.
-    // Report SDR output with a typical SDR panel's peak.
-    // EXPERIMENT: EDEN_NX2_REPORT_HDR=1 reports HDR output instead (nx2_hdr_status.h) with
+    // Report SDR output with a typical SDR panel's peak, unless the HDR output setting has games
+    // told the display is HDR (video_core/hdr_output.h): then format 2 with the HDR peak setting.
+    // The Legend of Zelda: Ocarina of Time answers that with RGB10A2 window images that hold an
+    // HDR10 signal. EDEN_NX2_REPORT_HDR=1 reports HDR whatever the setting, with
     // EDEN_NX2_HDR_PEAK_NITS (default 1000), to see what a game does with an HDR display.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
         const Nx2HdrStatus status = ReportedHdrStatus();
+        m_told_hdr_status = status;
         if (Nx2LogsQuery(++m_hdr_status_queries)) {
             LOG_INFO(Service, "nx2:vi2 104 HDR status query #{} -> format {} ({}), peak {} nits",
                      m_hdr_status_queries, status.format, status.IsHdr() ? "HDR" : "SDR",
@@ -2575,10 +2586,59 @@ private:
         return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
     }
 
+    /// The HDR status games are told now. It changes with the HDR output settings and, on
+    /// Automatic, when HDR is turned on or off in the host system.
     static Nx2HdrStatus ReportedHdrStatus() {
-        static const Nx2HdrStatus status =
-            Nx2HdrStatusFor(EnvU32("EDEN_NX2_REPORT_HDR"), EnvU32("EDEN_NX2_HDR_PEAK_NITS"));
-        return status;
+        static const u32 env_report = EnvU32("EDEN_NX2_REPORT_HDR");
+        static const u32 env_peak = EnvU32("EDEN_NX2_HDR_PEAK_NITS");
+        if (env_report != 0) {
+            return Nx2HdrStatusFor(env_report, env_peak);
+        }
+        const bool host_hdr10 = VideoCore::HdrOutput::g_host_hdr10_format.load(
+                                    std::memory_order_relaxed) != 0;
+        const bool hdr =
+            VideoCore::HdrOutput::ReportsHdr(Settings::values.hdr_output.GetValue(), host_hdr10);
+        return Nx2HdrStatusFor(hdr ? 1 : 0, Settings::values.hdr_peak_nits.GetValue());
+    }
+
+    static u32 ReportedPaperWhite() {
+        static const u32 env_paper_white = EnvU32("EDEN_NX2_HDR_PAPER_WHITE");
+        if (env_paper_white != 0) {
+            return Nx2HdrPaperWhiteFor(env_paper_white);
+        }
+        return Nx2HdrPaperWhiteFor(ReportedHdrStatus().IsHdr()
+                                       ? Settings::values.hdr_paper_white_nits.GetValue()
+                                       : 0);
+    }
+
+    // Fires the game's HDR status and paper white change events (vi2 265, 267) when what it was
+    // last told is no longer what a query would answer, once per new state, so the game queries
+    // again and switches its window images. Nothing fires while the answers stay the same.
+    void NotifyHdrChanges() {
+        const Nx2HdrStatus status = ReportedHdrStatus();
+        if (m_told_hdr_status && m_told_hdr_status->Words() != status.Words() &&
+            m_signaled_hdr_status.Words() != status.Words()) {
+            m_signaled_hdr_status = status;
+            LOG_INFO(Service,
+                     "nx2:vi2 HDR status changed to format {} ({}), peak {} nits: change event {}",
+                     status.format, status.IsHdr() ? "HDR" : "SDR", status.peak_nits,
+                     SignalChangeSlot(m_hdr_status_slot) ? "fired" : "not bound");
+        }
+        const u32 paper_white = ReportedPaperWhite();
+        if (m_told_paper_white && *m_told_paper_white != paper_white &&
+            m_signaled_paper_white != paper_white) {
+            m_signaled_paper_white = paper_white;
+            LOG_INFO(Service, "nx2:vi2 HDR paper white changed to {} nits: change event {}",
+                     paper_white, SignalChangeSlot(m_hdr_paper_white_slot) ? "fired" : "not bound");
+        }
+    }
+
+    bool SignalChangeSlot(std::optional<u32> slot) {
+        if (!slot || *slot >= m_native_events.size() || !m_native_events[*slot]) {
+            return false;
+        }
+        m_native_events[*slot]->Signal(system.Kernel());
+        return true;
     }
 
     // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
@@ -2692,6 +2752,11 @@ private:
     void BindChange(HLERequestContext& ctx) {
         const u32 index = ctx.CommandBuffer()[4];
         LOG_INFO(Service, "nx2:vi2 {} native event {} -> change notification", ctx.GetCommand(), index);
+        if (ctx.GetCommand() == 265) {
+            m_hdr_status_slot = index;
+        } else if (ctx.GetCommand() == 267) {
+            m_hdr_paper_white_slot = index;
+        }
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, false);
             m_native_events[index]->Signal(system.Kernel());
@@ -2703,6 +2768,12 @@ private:
     void UnbindNativeEvent(HLERequestContext& ctx) {
         const u32 index = ctx.CommandBuffer()[4];
         LOG_INFO(Service, "nx2:vi2 {} native event {} unbound", ctx.GetCommand(), index);
+        if (m_hdr_status_slot == index) {
+            m_hdr_status_slot.reset();
+        }
+        if (m_hdr_paper_white_slot == index) {
+            m_hdr_paper_white_slot.reset();
+        }
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, false);
         }
@@ -2842,6 +2913,12 @@ private:
     u32 m_shown_format{~0U}; // image format word last logged
     u64 m_hdr_status_queries{};      // vi2 104 calls
     u64 m_hdr_paper_white_queries{}; // vi2 105 calls
+    std::optional<Nx2HdrStatus> m_told_hdr_status; // the last vi2 104 answer
+    std::optional<u32> m_told_paper_white;         // the last vi2 105 answer
+    Nx2HdrStatus m_signaled_hdr_status{.format = 0}; // the state the 265 event last fired for
+    u32 m_signaled_paper_white{};                    // the same for 267
+    std::optional<u32> m_hdr_status_slot;      // native event bound with 265
+    std::optional<u32> m_hdr_paper_white_slot; // native event bound with 267
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
 
