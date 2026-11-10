@@ -2,6 +2,12 @@
 
 #include <fmt/format.h>
 #include "common/frizti_settings.h"
+r
+// The parameters and locals called 'values' here hide Settings::values on purpose; the MSVC
+// build makes that warning an error.
+#ifdef _MSC_VER
+#pragma warning(disable : 4459)
+#endif
 
 namespace Settings::Frizti {
 
