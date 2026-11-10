@@ -267,13 +267,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "required for some.\nParticles tend to only render correctly with Accurate mode."));
     INSERT(Settings, hdr_output, tr("HDR output:"),
            tr("Shows games that support HDR in HDR10 on an HDR display (Vulkan, with HDR turned "
-              "on in the system's display settings).
-Automatic: games are told the display is "
-              "HDR while the system has HDR on; other games look as before.
-On: games are "
+              "on in the system's display settings).\nAutomatic: games are told the display is "
+              "HDR while the system has HDR on; other games look as before.\nOn: games are "
               "always told the display is HDR, and images without HDR are shown at the paper "
-              "white brightness. Without an HDR display the HDR image is tonemapped.
-A running "
+              "white brightness. Without an HDR display the HDR image is tonemapped.\nA running "
               "game may need a moment, or a restart, to switch."));
     INSERT(Settings, hdr_peak_nits, tr("HDR peak brightness (nits):"),
            tr("The display's peak brightness that games are told, in nits. Set it to what the "
