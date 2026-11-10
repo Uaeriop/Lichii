@@ -78,6 +78,7 @@
 #include "core/hle/service/nx2_image_layout.h"
 #include "core/hle/service/nx2_video_input_queue.h"
 #include "core/hle/service/nx2_present_pacer.h"
+#include "core/hle/service/nx2_hdr_status.h"
 #include "core/hle/service/nx2_video_ready.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -2310,6 +2311,7 @@ private:
         std::optional<Nx2NativeObjects::VideoTrace> video_trace;
         Nx2ImageLayout layout{};
         u32 image_format{};
+        std::array<u32, 16> image_preference{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -2325,6 +2327,9 @@ private:
             parent_offset = memory->second.parent_offset + image->second.offset;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
             image_format = image->second.preference[6];
+            std::copy_n(image->second.preference.begin(),
+                        (std::min)(image->second.preference.size(), image_preference.size()),
+                        image_preference.begin());
             if (Nx2VideoTraceEnabled()) {
                 video_trace = m_objects->last_video_write;
             }
@@ -2402,6 +2407,17 @@ private:
                      "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}, docked={}",
                      image_id, layout.width, layout.height, shown_size, crop_width, crop_height,
                      Settings::IsDockedMode());
+        }
+        // The image's format decides whether the game sends an HDR signal: log each change with
+        // the whole preference, whose other words may say more (transfer function, color space).
+        if (image_format != m_shown_format) {
+            m_shown_format = image_format;
+            LOG_INFO(Service,
+                     "nx2:vi2 composite image {} format word {} ({}), HDR reported to the game: {}, "
+                     "preference {:#x}",
+                     image_id, image_format,
+                     image_format == 4 ? "RGB10A2" : image_format == 1 ? "RGBA8" : "shown as RGBA8",
+                     ReportedHdrStatus().IsHdr(), fmt::join(image_preference, " "));
         }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
@@ -2524,8 +2540,14 @@ private:
 
     // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 paper white in nits. The empty reply
     // left it to the message buffer's leftovers; answer the BT.2408 reference white.
+    // EDEN_NX2_HDR_PAPER_WHITE=<nits> answers another one (HDR output experiment).
     void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
-        TipcReplyWords(ctx, {203});
+        static const u32 paper_white = Nx2HdrPaperWhiteFor(EnvU32("EDEN_NX2_HDR_PAPER_WHITE"));
+        if (Nx2LogsQuery(++m_hdr_paper_white_queries)) {
+            LOG_INFO(Service, "nx2:vi2 105 HDR paper white query #{} -> {} nits",
+                     m_hdr_paper_white_queries, paper_white);
+        }
+        TipcReplyWords(ctx, {paper_white});
     }
 
     // nn::vi2::QueryDisplayHdrStatus(display name): u64 HdrOutputFormat, u16. The sdk's
@@ -2536,8 +2558,27 @@ private:
     // nn::vi2::QueryDisplayHdrStatus(display name): u64 output format, u16 peak luminance in
     // nits. The sdk takes format 1 as SDR and 2 as HDR and fails the query on any other value.
     // Report SDR output with a typical SDR panel's peak.
+    // EXPERIMENT: EDEN_NX2_REPORT_HDR=1 reports HDR output instead (nx2_hdr_status.h) with
+    // EDEN_NX2_HDR_PEAK_NITS (default 1000), to see what a game does with an HDR display.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
-        TipcReplyWords(ctx, {1, 0, 400});
+        const Nx2HdrStatus status = ReportedHdrStatus();
+        if (Nx2LogsQuery(++m_hdr_status_queries)) {
+            LOG_INFO(Service, "nx2:vi2 104 HDR status query #{} -> format {} ({}), peak {} nits",
+                     m_hdr_status_queries, status.format, status.IsHdr() ? "HDR" : "SDR",
+                     status.peak_nits);
+        }
+        TipcReplyWords(ctx, status.Words());
+    }
+
+    static u32 EnvU32(const char* name) {
+        const char* const value = std::getenv(name);
+        return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
+    }
+
+    static Nx2HdrStatus ReportedHdrStatus() {
+        static const Nx2HdrStatus status =
+            Nx2HdrStatusFor(EnvU32("EDEN_NX2_REPORT_HDR"), EnvU32("EDEN_NX2_HDR_PEAK_NITS"));
+        return status;
     }
 
     // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
@@ -2798,6 +2839,9 @@ private:
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
     u64 m_presents{};
     u64 m_shown_layout{}; // image and crop size last logged
+    u32 m_shown_format{~0U}; // image format word last logged
+    u64 m_hdr_status_queries{};      // vi2 104 calls
+    u64 m_hdr_paper_white_queries{}; // vi2 105 calls
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
 
