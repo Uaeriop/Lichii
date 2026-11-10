@@ -1569,8 +1569,8 @@ void RasterizerVulkan::TrackOotTonemappedImage(const GraphicsPipeline& pipeline)
     }
     std::scoped_lock lock{oot_network_bypass.mutex};
     if (oot_network_bypass.tonemapped.Address() != target.Address()) {
-        LOG_INFO(Render_Vulkan, "Ocarina of Time: tonemapped image at {:#x} {}x{}", target.Address(),
-                 target.width, target.height);
+        LOG_INFO(Render_Vulkan, "Ocarina of Time: tonemapped image at {:#x} {}x{}, format {:#x}",
+                 target.Address(), target.width, target.height, static_cast<u32>(target.format));
     }
     oot_network_bypass.tonemapped = target;
 }

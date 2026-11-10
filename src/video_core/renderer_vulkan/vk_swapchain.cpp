@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <limits>
 #include <vector>
 
@@ -39,6 +40,34 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats)
                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     });
     return found != formats.end() ? *found : formats[0];
+}
+
+/// Logs the swapchain's format and whether the surface offers HDR10 (it only does with
+/// VK_EXT_swapchain_colorspace enabled and HDR turned on in the system), once per change.
+void LogSurfaceFormats(vk::Span<VkSurfaceFormatKHR> formats, VkSurfaceFormatKHR chosen) {
+    const auto offers = [&formats](VkColorSpaceKHR color_space) {
+        return std::count_if(formats.begin(), formats.end(), [color_space](const auto& format) {
+            return format.colorSpace == color_space;
+        });
+    };
+    const bool hdr10 = std::any_of(formats.begin(), formats.end(), [](const auto& format) {
+        return format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+               (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+    });
+    const u64 summary = (u64{formats.size()} << 48) | (u64{hdr10} << 47) |
+                        ((static_cast<u64>(chosen.format) << 16) ^ static_cast<u64>(chosen.colorSpace));
+    static std::atomic<u64> logged{~u64{0}};
+    if (logged.exchange(summary, std::memory_order_relaxed) == summary) {
+        return;
+    }
+    LOG_INFO(Render_Vulkan,
+             "Swapchain format {} color space {}; the surface offers {} formats: {} sRGB, {} HDR10 "
+             "ST2084 (PQ), {} scRGB linear; HDR10 10-bit output available: {}",
+             string_VkFormat(chosen.format), string_VkColorSpaceKHR(chosen.colorSpace),
+             formats.size(), offers(VK_COLOR_SPACE_SRGB_NONLINEAR_KHR),
+             offers(VK_COLOR_SPACE_HDR10_ST2084_EXT),
+             offers(VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT), hdr10 ? "yes" : "no");
 }
 
 static VkPresentModeKHR ChooseSwapPresentMode(bool has_imm, bool has_mailbox,
@@ -292,6 +321,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
 
     const VkCompositeAlphaFlagBitsKHR alpha_flags{ChooseAlphaFlags(capabilities)};
     surface_format = ChooseSwapSurfaceFormat(formats);
+    LogSurfaceFormats(formats, surface_format);
     present_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
 
     u32 requested_image_count{capabilities.minImageCount + 1};

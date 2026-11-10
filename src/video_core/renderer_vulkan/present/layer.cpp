@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <variant>
+#include "common/logging.h"
+#include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/present.h"
 #include "video_core/renderer_vulkan/present/anti_alias_pass.h"
 /* X11 defines */
@@ -218,6 +220,8 @@ void Layer::RefreshResources(const Device& device, const Tegra::FramebufferConfi
     raw_width = framebuffer.width;
     raw_height = framebuffer.height;
     pixel_format = framebuffer.pixel_format;
+    LOG_INFO(Render_Vulkan, "Present layer {}x{}, guest pixel format {} -> {}", raw_width,
+             raw_height, static_cast<u32>(pixel_format), string_VkFormat(GetFormat(framebuffer)));
     anti_alias.emplace<std::monostate>();
 
     ReleaseRawImages();
