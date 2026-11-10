@@ -38,6 +38,9 @@ struct FramebufferConfig {
     Common::Rectangle<int> crop_rect{};
     BlendMode blending{};
     bool native_tiling{};
+    /// The image holds an HDR10 signal (BT.2020, PQ): a game that was told the display is HDR
+    /// presents one (video_core/hdr_output.h).
+    bool hdr_pq{};
     u32 layer_stack_mask{Service::Nvnflinger::DefaultLayerStackMask};
 };
 

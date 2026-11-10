@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <variant>
 #include "common/logging.h"
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
@@ -93,7 +94,7 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
                           VkDescriptorSet* out_descriptor_set, RasterizerVulkan& rasterizer,
                           VkSampler sampler, size_t image_index,
                           const Tegra::FramebufferConfig& framebuffer,
-                          const Layout::FramebufferLayout& layout) {
+                          const Layout::FramebufferLayout& layout, bool target_hdr) {
     const auto texture_info = rasterizer.AccelerateDisplay(
         framebuffer, framebuffer.address + framebuffer.offset, framebuffer.stride);
     const u32 texture_width = texture_info ? texture_info->width : framebuffer.width;
@@ -125,6 +126,25 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
     VkImage source_image = texture_info ? texture_info->image : *raw_images[image_index];
     VkImageView source_image_view =
         texture_info ? texture_info->image_view : *raw_image_views[image_index];
+
+    // An HDR10 image on an SDR target, or an SDR image on an HDR10 target: convert it first, so
+    // every filter below works on the target's signal.
+    if (const auto conversion =
+            VideoCore::HdrOutput::ConversionFor(framebuffer.hdr_pq, target_hdr);
+        conversion != VideoCore::HdrOutput::Conversion::None) {
+        const VkExtent2D source_extent{.width = scaled_width, .height = scaled_height};
+        if (!hdr_convert || hdr_convert->Extent().width != source_extent.width ||
+            hdr_convert->Extent().height != source_extent.height) {
+            for (const u64 tick : resource_ticks) {
+                scheduler.Wait(tick);
+            }
+            hdr_convert.emplace(device, memory_allocator, image_count, source_extent);
+        }
+        hdr_convert->Draw(device, scheduler, image_index, conversion,
+                          static_cast<f32>(Settings::values.hdr_paper_white_nits.GetValue()),
+                          static_cast<f32>(Settings::values.hdr_peak_nits.GetValue()),
+                          &source_image, &source_image_view);
+    }
 
     const bool already_upscaled = texture_info && texture_info->already_upscaled;
     // FXAA or SMAA on top of NVIDIA DLSS's image only blurs it.
@@ -220,8 +240,15 @@ void Layer::RefreshResources(const Device& device, const Tegra::FramebufferConfi
     raw_width = framebuffer.width;
     raw_height = framebuffer.height;
     pixel_format = framebuffer.pixel_format;
-    LOG_INFO(Render_Vulkan, "Present layer {}x{}, guest pixel format {} -> {}", raw_width,
-             raw_height, static_cast<u32>(pixel_format), string_VkFormat(GetFormat(framebuffer)));
+    // Once per change: layers are made again with every filter or swapchain change.
+    static std::atomic<u64> logged{~u64{0}};
+    const u64 summary =
+        (u64{raw_width} << 40) | (u64{raw_height} << 16) | static_cast<u64>(pixel_format);
+    if (logged.exchange(summary, std::memory_order_relaxed) != summary) {
+        LOG_INFO(Render_Vulkan, "Present layer {}x{}, guest pixel format {} -> {}", raw_width,
+                 raw_height, static_cast<u32>(pixel_format),
+                 string_VkFormat(GetFormat(framebuffer)));
+    }
     anti_alias.emplace<std::monostate>();
 
     ReleaseRawImages();
