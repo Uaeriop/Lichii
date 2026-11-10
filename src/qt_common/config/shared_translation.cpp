@@ -265,6 +265,22 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, gpu_accuracy, tr("GPU Mode:"),
            tr("Controls the GPU emulation mode.\nMost games render fine with Fast, but Accurate is still "
               "required for some.\nParticles tend to only render correctly with Accurate mode."));
+    INSERT(Settings, hdr_output, tr("HDR output:"),
+           tr("Shows games that support HDR in HDR10 on an HDR display (Vulkan, with HDR turned "
+              "on in the system's display settings).
+Automatic: games are told the display is "
+              "HDR while the system has HDR on; other games look as before.
+On: games are "
+              "always told the display is HDR, and images without HDR are shown at the paper "
+              "white brightness. Without an HDR display the HDR image is tonemapped.
+A running "
+              "game may need a moment, or a restart, to switch."));
+    INSERT(Settings, hdr_peak_nits, tr("HDR peak brightness (nits):"),
+           tr("The display's peak brightness that games are told, in nits. Set it to what the "
+              "display reaches (1000 fits most HDR OLEDs)."));
+    INSERT(Settings, hdr_paper_white_nits, tr("HDR paper white (nits):"),
+           tr("The brightness of plain white that games are told, and of images without HDR on "
+              "an HDR output, in nits."));
     INSERT(Settings, dma_accuracy, tr("DMA Accuracy:"),
            tr("Controls the DMA read mode.\nUnsafe is faster, while Safe is more stable and can fix issues in some games.\nDefault follows the GPU Accuracy setting."));
     INSERT(Settings, gpu_fence_behavior, tr("GPU Fence Behavior:"),
@@ -608,6 +624,12 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(OotMovieUpscale, Automatic, tr("Automatic")),
                               PAIR(OotMovieUpscale, Bilinear, tr("Bilinear (fast)")),
                               PAIR(OotMovieUpscale, Game, tr("Game's own upscaler")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::HdrOutput>::Index(),
+                          {
+                              PAIR(HdrOutput, Off, tr("Off")),
+                              PAIR(HdrOutput, Automatic, tr("Automatic")),
+                              PAIR(HdrOutput, On, tr("On")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::OotAntiAliasing>::Index(),
                           {

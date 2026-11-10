@@ -589,6 +589,31 @@ struct Values {
         true,
         true};
 
+    // HDR10 output (video_core/hdr_output.h). Automatic: games are told the display is HDR while
+    // the system has HDR on, and the swapchain switches to HDR10 when a game presents an HDR
+    // image. On: games are always told so, the swapchain is HDR10 whenever the display offers it,
+    // and SDR images are shown at paper white. The peak is what vi2 104 reports to games.
+    Setting<HdrOutput> hdr_output{linkage, HdrOutput::Off, "hdr_output",
+                                  Category::RendererAdvanced, Specialization::Default, true, true};
+    Setting<u32, true> hdr_peak_nits{linkage,
+                                     1000,
+                                     400,
+                                     10000,
+                                     "hdr_peak_nits",
+                                     Category::RendererAdvanced,
+                                     Specialization::Countable,
+                                     true,
+                                     true};
+    Setting<u32, true> hdr_paper_white_nits{linkage,
+                                            200,
+                                            80,
+                                            500,
+                                            "hdr_paper_white_nits",
+                                            Category::RendererAdvanced,
+                                            Specialization::Countable,
+                                            true,
+                                            true};
+
     SwitchableSetting<VramUsageMode, true> vram_usage_mode{linkage,
                                                            VramUsageMode::Conservative,
                                                            "vram_usage_mode",
